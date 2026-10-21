@@ -114,7 +114,7 @@ var endpointBackfillRunners = func() []endpointBackfillRunner {
 			return s.EventsEmitted, err
 		}},
 		{Name: "Hermes Agent", Sync: "beacon endpoint hermes sync", Run: func(r endpointBackfillRun) (int, error) {
-			s, err := hermessession.CollectOnce(hermessession.CollectOptions{Write: true, UserMode: r.UserMode, LogPath: r.LogPath, StatePath: resolveHermesStatePath("", r.UserMode), Since: r.Since, Budget: r.Budget})
+			s, err := hermessession.CollectOnce(hermessession.CollectOptions{Write: true, UserMode: r.UserMode, LogPath: r.LogPath, StatePath: resolveHermesStatePath("", "", r.UserMode), Since: r.Since, Budget: r.Budget})
 			return s.EventsEmitted, err
 		}},
 		{Name: "DeepSeek Harness", Sync: "beacon endpoint dsh sync", Run: func(r endpointBackfillRun) (int, error) {
