@@ -1,11 +1,15 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/dashboard"
 )
@@ -31,19 +35,6 @@ func writeLensLog(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return path
-}
-
-func TestLensesSpecPrintsTheSpecAndAnExample(t *testing.T) {
-	useLensToolsDefaults(t)
-	cmd, buf := newCmd()
-	if err := lensesSpecCmd.RunE(cmd, nil); err != nil || !strings.HasPrefix(buf.String(), "# Lenses — Specification") {
-		t.Fatalf("spec = %v, %.60q", err, buf.String())
-	}
-	lensToolsOpts.example = true
-	cmd, buf = newCmd()
-	if err := lensesSpecCmd.RunE(cmd, nil); err != nil || !strings.Contains(buf.String(), `<script type="application/beacon-lens+json">`) {
-		t.Fatalf("spec --example = %v", err)
-	}
 }
 
 func TestLensesLint(t *testing.T) {
@@ -97,6 +88,40 @@ func TestLensesLint(t *testing.T) {
 	}
 }
 
+// `lenses spec --example` is where a lens author starts, so what it prints must be a complete lens
+// that `lenses lint --strict` accepts -- not the spec text, and not a lens with warnings.
+func TestLensesSpecExampleIsALensThatLintsClean(t *testing.T) {
+	useLensToolsDefaults(t)
+	run := func(args ...string) (string, error) {
+		var out bytes.Buffer
+		rootCmd.SetOut(&out)
+		rootCmd.SetErr(&out)
+		rootCmd.SetArgs(append([]string{"lenses"}, args...))
+		t.Cleanup(func() {
+			for _, c := range []*cobra.Command{lensesSpecCmd, lensesLintCmd} {
+				c.Flags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
+			}
+			rootCmd.SetOut(nil)
+			rootCmd.SetErr(nil)
+			rootCmd.SetArgs(nil)
+		})
+		err := rootCmd.Execute()
+		return out.String(), err
+	}
+
+	example, err := run("spec", "--example")
+	if err != nil {
+		t.Fatalf("lenses spec --example: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "example.lens.html")
+	if err := os.WriteFile(path, []byte(example), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := run("lint", "--strict", path); err != nil || !strings.Contains(out, "0 error(s), 0 warning(s) in 1 file(s).") {
+		t.Fatalf("the printed example does not lint clean: %v\n%s", err, out)
+	}
+}
+
 func TestLensesDataPrintsWhatALensReceives(t *testing.T) {
 	useLensToolsDefaults(t)
 	lensToolsOpts.logPath = writeLensLog(t)
@@ -147,11 +172,14 @@ func TestLensesPreviewServesTheFileAgainstARealSession(t *testing.T) {
 	if err := lensesPreviewCmd.RunE(cmd, []string{file}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(buf.String(), "Open: http://127.0.0.1:8766/session.html?id=newer&lens=my-lens") {
+	if served.Token == "" || !strings.Contains(buf.String(), "Open: http://127.0.0.1:8766/session.html?id=newer&lens=my-lens&token="+served.Token+"\n") {
 		t.Fatalf("preview output = %q", buf.String())
 	}
 	if served.Addr != lensPreviewAddr || len(served.LensFiles) != 1 || !filepath.IsAbs(served.LensFiles[0]) || served.LogPath != lensToolsOpts.logPath {
 		t.Fatalf("served = %+v", served)
+	}
+	if strings.Count(buf.String(), served.Token) != 1 {
+		t.Fatalf("the launch secret appears outside the URL: %q", buf.String())
 	}
 
 	cmd, _ = newCmd()

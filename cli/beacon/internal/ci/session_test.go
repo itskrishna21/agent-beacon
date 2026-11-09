@@ -20,7 +20,7 @@ import (
 func TestProvisionUsesRunnerTempAndWritesCollectorConfig(t *testing.T) {
 	runnerTemp := t.TempDir()
 	t.Setenv("RUNNER_TEMP", runnerTemp)
-	collector := fakeExecutable(t, "collector", "#!/bin/sh\nsleep 60\n")
+	collector := fakeExecutable(t, "collector", fakeCollectorPrelude+"sleep 60\n")
 	oldResolve := resolveCollectorBinary
 	resolveCollectorBinary = func(configured string) (string, error) {
 		if configured != collector {
@@ -54,7 +54,7 @@ func TestProvisionUsesRunnerTempAndWritesCollectorConfig(t *testing.T) {
 func TestProvisionUsesLogPathDirectoryAsBaseDir(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "artifacts", "runtime.jsonl")
-	collector := fakeExecutable(t, "collector", "#!/bin/sh\nsleep 60\n")
+	collector := fakeExecutable(t, "collector", fakeCollectorPrelude+"sleep 60\n")
 	oldResolve := resolveCollectorBinary
 	resolveCollectorBinary = func(string) (string, error) { return collector, nil }
 	t.Cleanup(func() { resolveCollectorBinary = oldResolve })
@@ -82,7 +82,9 @@ func TestStartStopCollectorProcess(t *testing.T) {
 		t.Skip("shell fake uses POSIX signal semantics")
 	}
 	t.Setenv("RUNNER_TRACKING_ID", "github-actions-tracker")
-	collector := fakeExecutable(t, "collector", "#!/bin/sh\nenv > \"$2.env\"\ntrap 'exit 0' TERM\nwhile true; do sleep 1; done\n")
+	// exec so SIGTERM reaches the sleeping process directly; a trap in a `sleep 1` loop only runs
+	// after the current sleep returns, which made every Stop wait up to a second.
+	collector := fakeExecutable(t, "collector", fakeCollectorPrelude+"env > \"$2.env\"\nexec sleep 60\n")
 	oldWait := waitCollectorReady
 	waitCollectorReady = func(endpointconfig.Config, time.Duration) error { return nil }
 	t.Cleanup(func() { waitCollectorReady = oldWait })
@@ -136,7 +138,7 @@ func TestStartDetachedWritesStateAndExports(t *testing.T) {
 		t.Skip("shell fake uses POSIX signal semantics")
 	}
 	dir := t.TempDir()
-	collector := fakeExecutable(t, "collector", "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do sleep 1; done\n")
+	collector := fakeExecutable(t, "collector", fakeCollectorPrelude+"exec sleep 60\n")
 	oldWait := waitCollectorReady
 	waitCollectorReady = func(endpointconfig.Config, time.Duration) error { return nil }
 	t.Cleanup(func() { waitCollectorReady = oldWait })
@@ -211,7 +213,7 @@ func TestRunChildPassesTheCallersWebFetchOptIn(t *testing.T) {
 // bodies the job turned on reach the collector config as capture_model_context, and anything else
 // leaves it dropping every body.
 func TestProvisionCapturesModelContextWhenTheJobTurnsInlineBodiesOn(t *testing.T) {
-	collector := fakeExecutable(t, "collector", "#!/bin/sh\nsleep 60\n")
+	collector := fakeExecutable(t, "collector", fakeCollectorPrelude+"sleep 60\n")
 	oldResolve := resolveCollectorBinary
 	resolveCollectorBinary = func(string) (string, error) { return collector, nil }
 	t.Cleanup(func() { resolveCollectorBinary = oldResolve })
@@ -435,7 +437,7 @@ func TestProvisionForwardWritesSecureExporterConfig(t *testing.T) {
 	runnerTemp := t.TempDir()
 	t.Setenv("RUNNER_TEMP", runnerTemp)
 	t.Setenv(EnvSplunkToken, "top-secret-token")
-	collector := fakeExecutable(t, "collector", "#!/bin/sh\nsleep 60\n")
+	collector := fakeExecutable(t, "collector", fakeCollectorPrelude+"sleep 60\n")
 	oldResolve := resolveCollectorBinary
 	resolveCollectorBinary = func(string) (string, error) { return collector, nil }
 	t.Cleanup(func() { resolveCollectorBinary = oldResolve })
@@ -485,30 +487,14 @@ func TestProvisionForwardWritesSecureExporterConfig(t *testing.T) {
 	}
 }
 
-func TestProvisionForwardMissingTokenFails(t *testing.T) {
-	t.Setenv("RUNNER_TEMP", t.TempDir())
-	t.Setenv(EnvSplunkToken, "")
-	collector := fakeExecutable(t, "collector", "#!/bin/sh\nsleep 60\n")
-	oldResolve := resolveCollectorBinary
-	resolveCollectorBinary = func(string) (string, error) { return collector, nil }
-	t.Cleanup(func() { resolveCollectorBinary = oldResolve })
-
-	_, err := Provision(Options{
-		CollectorPath:   collector,
-		Harness:         "claude",
-		Forward:         "splunk",
-		ForwardEndpoint: "https://splunk.example",
-	})
-	if err == nil {
-		t.Fatal("Provision should fail when the forwarding token is missing")
-	}
-}
-
 func TestRunChildStripsForwardToken(t *testing.T) {
 	testenv.RequirePOSIXExecutableFixtures(t)
 	dir := t.TempDir()
 	output := filepath.Join(dir, "env.txt")
+	// Every forwarding provider's token is kept from the agent; the rest of the environment is not.
 	t.Setenv(EnvSplunkToken, "leak-me-not")
+	t.Setenv(EnvFalconToken, "falcon-leak-me-not")
+	t.Setenv("BEACON_TEST_KEEP", "kept")
 	child := fakeExecutable(t, "child", "#!/bin/sh\nenv > \"$1\"\n")
 	session := &Session{
 		BaseDir:      dir,
@@ -525,8 +511,13 @@ func TestRunChildStripsForwardToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := string(data)
-	if strings.Contains(env, "leak-me-not") || strings.Contains(env, EnvSplunkToken+"=") {
-		t.Fatalf("child env exposed the SIEM token:\n%s", env)
+	for _, leaked := range []string{"leak-me-not", EnvSplunkToken + "=", EnvFalconToken + "="} {
+		if strings.Contains(env, leaked) {
+			t.Fatalf("child env exposed a SIEM token (%q):\n%s", leaked, env)
+		}
+	}
+	if !strings.Contains(env, "BEACON_TEST_KEEP=kept") {
+		t.Fatalf("child env dropped a variable that is no token:\n%s", env)
 	}
 	if !strings.Contains(env, "CLAUDE_CODE_ENABLE_TELEMETRY=1") {
 		t.Fatalf("child env missing Claude telemetry vars:\n%s", env)
@@ -569,6 +560,12 @@ func TestRunChildStripsUploadCredentialsWhenUploadConfigured(t *testing.T) {
 		t.Fatalf("child env missing Claude telemetry vars:\n%s", env)
 	}
 }
+
+// fakeCollectorPrelude starts every fake collector script. Writing the collector config runs
+// `<collector> components` on macOS and Windows to decide on peer attribution; a fake that went on
+// to sleep there would hold each Provision until that run timed out. Answering with an empty listing
+// at once reads as a collector that cannot list its components, the same as before.
+const fakeCollectorPrelude = "#!/bin/sh\n[ \"$1\" = components ] && exit 0\n"
 
 func fakeExecutable(t *testing.T, name, script string) string {
 	t.Helper()

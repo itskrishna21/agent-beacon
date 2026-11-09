@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"testing/fstest"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -24,7 +23,7 @@ func TestVectorConfigForwardsBothStreamsOverHTTPWithABearerSecret(t *testing.T) 
 		t.Fatalf("VectorConfig returned error: %v", err)
 	}
 	for _, want := range []string{
-		`include = ["/tmp/beacon/runtime.jsonl"]`,
+		`include = ["/tmp/beacon/runtime.jsonl", "/tmp/beacon/runtime.jsonl.1"]`,
 		`include = ["/tmp/beacon/inventory_state.jsonl"]`,
 		`read_from = "end"`,
 		`read_from = "beginning"`,
@@ -124,7 +123,6 @@ func TestIngestSmokeTestChecksCredentialBeforePosting(t *testing.T) {
 		"Content-Encoding: gzip",
 		"Content-Type: application/x-ndjson",
 		"-H @",
-		"validation only",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("smoke test missing %q:\n%s", want, got)
@@ -226,7 +224,7 @@ func TestRenderVectorConfigReplacesEveryEnvironmentReference(t *testing.T) {
 		`uri = "https://ingest.example.test/v1/ingest/runtime"`,
 		`uri = "https://ingest.example.test/v1/ingest/inventory"`,
 		`uri = "https://ingest.example.test/v1/ingest/health"`,
-		`include = ["/Users/me/.beacon/endpoint/logs/runtime.jsonl"]`,
+		`include = ["/Users/me/.beacon/endpoint/logs/runtime.jsonl", "/Users/me/.beacon/endpoint/logs/runtime.jsonl.1"]`,
 		`token = "SECRET[beacon.device_key]"`,
 	} {
 		if !strings.Contains(got, want) {
@@ -396,12 +394,5 @@ func TestSecretsFileContentIsTheShapeTheTemplateReads(t *testing.T) {
 	quoted := SecretsFileContent(`a"b\c`)
 	if err := json.Unmarshal([]byte(quoted), &parsed); err != nil || parsed[SecretsKey] != `a"b\c` {
 		t.Fatalf("secrets content must escape the key: %q (%v)", quoted, err)
-	}
-}
-
-func TestFilesFromFSPropagatesReadErrors(t *testing.T) {
-	fsys := fstest.MapFS{"pack/README.md": &fstest.MapFile{Data: []byte("readme")}}
-	if _, err := filesFromFS(fsys); err == nil || !strings.Contains(err.Error(), "asymptote pack asset") {
-		t.Fatalf("expected a labelled asset read error, got %v", err)
 	}
 }

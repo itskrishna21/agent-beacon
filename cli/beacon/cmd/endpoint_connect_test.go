@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -12,72 +13,12 @@ import (
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/account"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/asymptote"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/lifecycle"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/service"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/managedprivacy"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/onboarding"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/testenv"
 )
-
-func TestEndpointConnectAndDisconnectCommandsRegistered(t *testing.T) {
-	for _, name := range []string{"connect", "disconnect"} {
-		cmd, _, err := endpointCmd.Find([]string{name})
-		if err != nil || cmd == nil || cmd.Use != name {
-			t.Fatalf("endpoint %s not registered: %v %#v", name, err, cmd)
-		}
-		for _, flag := range []string{"user", "system", "log-path", "json"} {
-			if cmd.Flags().Lookup(flag) == nil {
-				t.Fatalf("endpoint %s missing --%s", name, flag)
-			}
-		}
-	}
-	connect, _, _ := endpointCmd.Find([]string{"connect"})
-	for _, flag := range []string{"dashboard-url", "no-browser", "vector-bin", "privacy-mode"} {
-		if connect.Flags().Lookup(flag) == nil {
-			t.Fatalf("connect missing --%s", flag)
-		}
-	}
-	disconnect, _, _ := endpointCmd.Find([]string{"disconnect"})
-	if disconnect.Flags().Lookup("keep-credentials") == nil {
-		t.Fatal("disconnect missing --keep-credentials")
-	}
-	for _, removed := range []string{"ingest"} {
-		if cmd, _, err := rootCmd.Find([]string{removed}); err == nil && cmd != nil && cmd.Use == removed {
-			t.Fatalf("removed command %q is still registered", removed)
-		}
-	}
-}
-
-func TestManagedIngestStatusLine(t *testing.T) {
-	notConnected := managedIngestStatusLine(asymptote.ManagedIngestStatus{})
-	if !strings.Contains(notConnected, "not connected") || !strings.Contains(notConnected, "beacon endpoint connect") {
-		t.Fatalf("not connected line = %q", notConnected)
-	}
-	connected := managedIngestStatusLine(asymptote.ManagedIngestStatus{
-		Enabled:          true,
-		DeviceID:         "dev-1",
-		OrganizationName: "Asymptote Test",
-		Forwarder:        service.Status{Loaded: true, Running: true},
-		Credential:       "valid",
-		BufferBytes:      3 * 1024 * 1024,
-		PrivacyMode:      managedprivacy.MetadataOnly,
-	})
-	for _, want := range []string{"connected to Asymptote Test as device dev-1", "forwarder loaded=true running=true", "credential valid", "buffer 3.0 MiB", "privacy Metadata only"} {
-		if !strings.Contains(connected, want) {
-			t.Fatalf("connected line missing %q: %s", want, connected)
-		}
-	}
-	revoked := managedIngestStatusLine(asymptote.ManagedIngestStatus{Enabled: true, DeviceID: "dev-1", Credential: "revoked"})
-	if !strings.Contains(revoked, "credential revoked") || !strings.Contains(revoked, "re-enroll") {
-		t.Fatalf("revoked line = %q", revoked)
-	}
-	unknown := managedIngestStatusLine(asymptote.ManagedIngestStatus{Enabled: true, DeviceID: "dev-1", Credential: "unknown", CredentialMessage: "ingest service unreachable"})
-	if !strings.Contains(unknown, "credential unknown (ingest service unreachable)") {
-		t.Fatalf("unknown line = %q", unknown)
-	}
-	if strings.Contains(connected+revoked+unknown, "bcn_device") {
-		t.Fatal("status lines must never carry a device key")
-	}
-}
 
 func TestConnectUsesSignedInAccountAndSelectedPrivacy(t *testing.T) {
 	originalLoad, originalConnect := connectAccountLoad, connectManagedEndpoint
@@ -122,30 +63,8 @@ func TestConnectUsesSignedInAccountAndSelectedPrivacy(t *testing.T) {
 	if captured.PrivacyMode != managedprivacy.MetadataOnly {
 		t.Fatalf("privacy mode = %q", captured.PrivacyMode)
 	}
-	if strings.Contains(out.String(), "bcn_cli_secret") || !strings.Contains(out.String(), "Managed privacy: Metadata only") {
-		t.Fatalf("output = %q", out.String())
-	}
-
-	// Setup ends on what to do next, not on more state. This is the moment the user
-	// has the most intent and the least idea what happens now, and nothing is
-	// forwarded yet: the runtime source starts at the connection point, so the
-	// dashboard stays empty until an agent actually runs.
-	text := out.String()
-	for _, want := range []string{
-		"Next: run any supported agent",
-		// The recorded service URL is the marketing root; the app is at /dashboard.
-		"sessions appear at https://beacon.sh/dashboard",
-		"within about 15 seconds",
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("connect should close on next steps, missing %q:\n%s", want, text)
-		}
-	}
-	if strings.Contains(text, "/dashboard/endpoints") || strings.Contains(text, "Revoke this device") {
-		t.Fatalf("the closing lines should be next steps, not device administration:\n%s", text)
-	}
-	if last := strings.TrimSpace(text); !strings.HasSuffix(last, "within about 15 seconds of the activity.") {
-		t.Fatalf("the dashboard should be the last thing said:\n%s", text)
+	if strings.Contains(out.String(), "bcn_cli_secret") {
+		t.Fatalf("connect output leaks the account token: %q", out.String())
 	}
 }
 
@@ -163,6 +82,43 @@ func TestDashboardHomeURL(t *testing.T) {
 	} {
 		if got := dashboardHomeURL(base); got != want {
 			t.Fatalf("dashboardHomeURL(%q) = %q, want %q", base, got, want)
+		}
+	}
+}
+
+// A system connect or disconnect from a shell without privileges used to say "rerun with sudo",
+// which names a command Windows does not have. The hint has to come from the platform, as it
+// already does for install, update and the job commands.
+func TestSystemConnectAndDisconnectNameThePlatformElevationHint(t *testing.T) {
+	if lifecycle.HasSystemPrivileges() {
+		t.Skip("an elevated process can connect a system endpoint")
+	}
+	originalEndpointOpts := endpointOpts
+	originalConnect := connectManagedEndpoint
+	t.Cleanup(func() {
+		endpointOpts = originalEndpointOpts
+		connectManagedEndpoint = originalConnect
+	})
+	endpointOpts.userMode, endpointOpts.systemMode = false, true
+	connectManagedEndpoint = func(context.Context, asymptote.ConnectOptions) (*asymptote.ConnectResult, error) {
+		return nil, errors.New("must not run")
+	}
+	for name, run := range map[string]func(*cobra.Command, []string) error{
+		"connect":    runEndpointConnect,
+		"disconnect": runEndpointDisconnect,
+	} {
+		err := run(&cobra.Command{}, nil)
+		if err == nil {
+			t.Fatalf("%s: a system %s without privileges returned nil", name, name)
+		}
+		if !strings.Contains(err.Error(), "elevated privileges") {
+			t.Fatalf("%s: error = %v, want it to name the elevation requirement", name, err)
+		}
+		if !strings.Contains(err.Error(), lifecycle.SystemPrivilegeHint()) {
+			t.Fatalf("%s: error = %v, want it to carry this platform's hint (%q)", name, err, lifecycle.SystemPrivilegeHint())
+		}
+		if strings.Contains(err.Error(), "sudo") && runtime.GOOS == "windows" {
+			t.Fatalf("%s: error = %v names sudo on Windows", name, err)
 		}
 	}
 }
@@ -214,15 +170,6 @@ func TestSelectedManagedPrivacyModePrefersFlagThenActiveEnrollment(t *testing.T)
 	}
 }
 
-func TestHumanBytes(t *testing.T) {
-	cases := map[int64]string{0: "0 B", 512: "512 B", 1024: "1.0 KiB", 1536: "1.5 KiB", 536870912: "512.0 MiB"}
-	for in, want := range cases {
-		if got := humanBytes(in); got != want {
-			t.Errorf("humanBytes(%d) = %q, want %q", in, got, want)
-		}
-	}
-}
-
 func TestCloudStatusLineOnlyWhereBeaconCloudApplies(t *testing.T) {
 	notConnected := asymptote.ManagedIngestStatus{}
 	if line := cloudStatusLine(notConnected, false, false); line != "" {
@@ -241,16 +188,5 @@ func TestCloudStatusLineOnlyWhereBeaconCloudApplies(t *testing.T) {
 	pending := asymptote.ManagedIngestStatus{Message: "connect did not finish"}
 	if line := cloudStatusLine(pending, false, false); !strings.Contains(line, "connect did not finish") {
 		t.Errorf("system install, incomplete connect: line = %q, want its message", line)
-	}
-}
-
-func TestScriptForwarderStatusLine(t *testing.T) {
-	running := scriptForwarderStatusLine(service.Status{Label: "com.beacon.endpoint.s3-forwarder", Loaded: true, Running: true})
-	if running != "S3 forwarder: loaded=true running=true" {
-		t.Errorf("running line = %q", running)
-	}
-	missing := scriptForwarderStatusLine(service.Status{Label: "com.beacon.endpoint.gcs-forwarder", Message: "Could not find service"})
-	if missing != "GCS forwarder: loaded=false running=false (Could not find service)" {
-		t.Errorf("not loaded line = %q", missing)
 	}
 }

@@ -171,6 +171,7 @@
                       "runtimes/github-copilot-cli",
                       "runtimes/goose",
                       "runtimes/grok-build",
+                      "runtimes/harness2",
                       "runtimes/kimi-code",
                       "runtimes/kiro",
                       "runtimes/muse-code",
@@ -198,6 +199,7 @@
                 "group": "Browser Chat",
                 "pages": [
                   "runtimes/browser-extension",
+                  "runtimes/browser-extension-chrome-policy",
                   "runtimes/browser-extension-chromium",
                   "runtimes/claude-web",
                   "runtimes/chatgpt-web"
@@ -237,6 +239,7 @@
               "security/data-inventory",
               "security/retention-redaction",
               "security/endpoint-operations",
+              "security/restricted-log-access",
               "security/policy"
             ]
           },
@@ -273,7 +276,8 @@
                   "platforms/macos",
                   "platforms/linux",
                   "platforms/linux-deployment-profile",
-                  "platforms/windows"
+                  "platforms/windows",
+                  "platforms/fleet-deployment"
                 ]
               },
               "cli/upgrade",
@@ -333,10 +337,12 @@
                   "cli/endpoint-onboarding",
                   "cli/endpoint-opencode",
                   "cli/endpoint-pi",
+                  "cli/endpoint-cursor",
                   "cli/endpoint-copilot",
                   "cli/endpoint-devin",
                   "cli/endpoint-dsh",
                   "cli/endpoint-fx",
+                  "cli/endpoint-harness2",
                   "cli/endpoint-traces",
                   "cli/dashboard",
                   "cli/wazuh",
@@ -391,6 +397,7 @@
                   "cli/scan-ci-gates"
                 ]
               },
+              "cli/intel",
               "cli/handoff",
               "cli/share",
               "cli/lenses",
@@ -501,7 +508,8 @@
                   "log-forwarding/cloudwatch",
                   "log-forwarding/customer-managed",
                   "log-forwarding/datadog",
-                  "log-forwarding/elastic"
+                  "log-forwarding/elastic",
+                  "log-forwarding/rsyslog"
                 ]
               },
               {
@@ -537,7 +545,8 @@
                   "guides/jamf-gcs-mdm",
                   "guides/jamf-s3-mdm",
                   "guides/jamf-falcon-mdm",
-                  "guides/jamf-sentinel-mdm"
+                  "guides/jamf-sentinel-mdm",
+                  "guides/workspace-one-sentinel-mdm"
                 ]
               },
               {
@@ -554,6 +563,13 @@
                 "root": "mdm/fleet",
                 "pages": [
                   "guides/fleet-s3-mdm"
+                ]
+              },
+              {
+                "group": "Kandji",
+                "expanded": true,
+                "pages": [
+                  "guides/kandji-otlp-forward-mdm"
                 ]
               }
             ]
@@ -679,6 +695,12 @@
       "cursor",
       "vscode"
     ]
+  },
+  "integrations": {
+    "posthog": {
+      "apiKey": "phc_mAC6ywfI3poAo9dBeuNJUJySdxYdJzvoYapN5Wn9cVN",
+      "apiHost": "https://us.i.posthog.com"
+    }
   },
   "redirects": [
     {

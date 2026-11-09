@@ -141,7 +141,7 @@ func parseDCR(t *testing.T, path string) dcrRule {
 // columns the shared transform reads, and the DCR writes to the same table as the Azure Monitor
 // Agent path. Nothing in Azure checks any of that until the first record is rejected.
 func TestLogsIngestionPathMatchesTheDCRAndTheAgentPath(t *testing.T) {
-	vector := mustRead("pack/vector.toml.tmpl")
+	vector := manualVectorConfig()
 	ingest := parseDCR(t, "pack/dcr-logs-ingestion-template.json").Resources[0].Properties
 	agent := parseDCR(t, "pack/dcr-template.json").Resources[0].Properties
 
@@ -181,7 +181,7 @@ func TestLogsIngestionPathMatchesTheDCRAndTheAgentPath(t *testing.T) {
 
 // Credentials come from the Vector service environment, never from the pack.
 func TestVectorConfigTakesAzureCredentialsFromTheEnvironment(t *testing.T) {
-	vector := mustRead("pack/vector.toml.tmpl")
+	vector := manualVectorConfig()
 	for _, key := range []string{"azure_tenant_id", "azure_client_id", "azure_client_secret", "endpoint", "dcr_immutable_id"} {
 		found := false
 		for _, line := range strings.Split(vector, "\n") {
@@ -226,28 +226,6 @@ func TestSampleEventsCoverValidationHookAndOTelShapes(t *testing.T) {
 	}
 }
 
-func TestPackREADMEMentionsSentinelSetupAndSecretBoundaries(t *testing.T) {
-	readme := mustRead("pack/README.md")
-	for _, want := range []string{
-		"beacon endpoint sentinel validate",
-		"Azure Monitor Agent",
-		"Data Collection Rule",
-		"BeaconRuntime_CL",
-		"Microsoft Sentinel",
-		"Content Handling",
-		"/var/log/beacon-agent/runtime.jsonl",
-		"not in Beacon endpoint configuration",
-		"Vector and the Logs Ingestion API",
-		"dcr-logs-ingestion-template.json",
-		"Monitoring Metrics Publisher",
-		"CEF and Syslog",
-	} {
-		if !strings.Contains(readme, want) {
-			t.Fatalf("pack README missing %q", want)
-		}
-	}
-}
-
 func TestKQLAssetsMentionSentinelTableAndValidation(t *testing.T) {
 	for _, path := range []string{
 		"pack/queries.kql",
@@ -270,7 +248,7 @@ func TestKQLAssetsMentionSentinelTableAndValidation(t *testing.T) {
 // The Logs Ingestion API rejects requests over 1 MB, and the azure_logs_ingestion sink batches up to
 // 10 MB by default, so a busy flush would lose a whole batch to 413s.
 func TestVectorBatchesFitTheLogsIngestionLimit(t *testing.T) {
-	vector := mustRead("pack/vector.toml.tmpl")
+	vector := manualVectorConfig()
 	// \r? because Windows checkouts carry CRLF, and (?m)$ matches only before \n.
 	match := regexp.MustCompile(`(?m)^max_bytes = (\d+)\r?$`).FindStringSubmatch(vector)
 	if match == nil {

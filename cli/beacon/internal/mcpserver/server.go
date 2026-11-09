@@ -1,7 +1,8 @@
 // Package mcpserver implements the small local MCP server surface Beacon needs
-// for activity querying. It intentionally supports the server methods exercised
-// by current desktop clients and tests: initialize, tools/list, tools/call, and
-// notifications without responses.
+// for activity querying, approved memory, and Beacon Intel checks (intel_tools.go).
+// It intentionally supports the server methods exercised by current desktop
+// clients and tests: initialize, ping, tools/list, tools/call, and notifications
+// without responses.
 package mcpserver
 
 import (
@@ -16,9 +17,12 @@ import (
 	"time"
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/activity"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/inventory"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/intel"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/learning"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/version"
 	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve"
+	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve/intelapi"
 )
 
 const (
@@ -34,6 +38,11 @@ type Server struct {
 	logPath string
 	tools   map[string]Tool
 	order   []string
+	// newIntel, inventory and registryEnv replace the Beacon Intel client, the inventory scan
+	// and where launcher registry settings are read in tests.
+	newIntel    func() (*intelapi.Client, error)
+	inventory   func(includeProject bool) inventory.Result
+	registryEnv func() intel.RegistryEnv
 }
 
 type Tool struct {
@@ -51,11 +60,18 @@ type rpcRequest struct {
 }
 
 type rpcResponse struct {
-	JSONRPC string      `json:"jsonrpc"`
-	ID      interface{} `json:"id,omitempty"`
-	Result  interface{} `json:"result,omitempty"`
-	Error   *rpcError   `json:"error,omitempty"`
+	JSONRPC string `json:"jsonrpc"`
+	// ID is the request's id echoed byte for byte; decoding it would round large numbers.
+	ID     json.RawMessage `json:"id"`
+	Result interface{}     `json:"result,omitempty"`
+	Error  *rpcError       `json:"error,omitempty"`
 }
+
+// nullID answers a request whose id could not be read, as JSON-RPC 2.0 section 5 requires.
+var nullID = json.RawMessage("null")
+
+// errMethodNotFound marks a method this server does not implement (JSON-RPC -32601).
+var errMethodNotFound = errors.New("method not found")
 
 type rpcError struct {
 	Code    int    `json:"code"`
@@ -123,7 +139,7 @@ func (s *Server) ToolNames() []string {
 }
 
 func (s *Server) HasExpectedTools() error {
-	expected := []string{"search_activity", "summarize_activity", "get_activity_event", "list_activity_filters", "search_memory", "get_memory", "get_memory_context"}
+	expected := append([]string{"search_activity", "summarize_activity", "get_activity_event", "list_activity_filters", "search_memory", "get_memory", "get_memory_context"}, intelTools()...)
 	for _, name := range expected {
 		if _, ok := s.tools[name]; !ok {
 			return fmt.Errorf("missing MCP tool %q", name)
@@ -188,20 +204,23 @@ func (s *Server) HTTPHandler() http.Handler {
 func (s *Server) handle(ctx context.Context, data []byte) (rpcResponse, bool) {
 	var request rpcRequest
 	if err := json.Unmarshal(data, &request); err != nil {
-		return errorResponse(nil, -32700, "parse error"), true
+		return errorResponse(nullID, -32700, "parse error"), true
 	}
-	id, hasID := requestID(request.ID)
-	if !hasID && strings.HasPrefix(request.Method, "notifications/") {
+	// A request without an id member is a notification, which gets no response.
+	if len(request.ID) == 0 {
 		return rpcResponse{}, false
 	}
-	if !hasID {
-		return rpcResponse{}, false
+	if !validID(request.ID) {
+		return errorResponse(nullID, -32600, "invalid request: id must be a string, number, or null"), true
 	}
 	result, err := s.dispatch(ctx, request)
-	if err != nil {
-		return errorResponse(id, -32000, err.Error()), true
+	if errors.Is(err, errMethodNotFound) {
+		return errorResponse(request.ID, -32601, err.Error()), true
 	}
-	return rpcResponse{JSONRPC: "2.0", ID: id, Result: result}, true
+	if err != nil {
+		return errorResponse(request.ID, -32000, err.Error()), true
+	}
+	return rpcResponse{JSONRPC: "2.0", ID: request.ID, Result: result}, true
 }
 
 func (s *Server) dispatch(ctx context.Context, request rpcRequest) (interface{}, error) {
@@ -217,6 +236,8 @@ func (s *Server) dispatch(ctx context.Context, request rpcRequest) (interface{},
 				"version": version.GetVersion(),
 			},
 		}, nil
+	case "ping":
+		return map[string]interface{}{}, nil
 	case "tools/list":
 		return map[string]interface{}{"tools": s.listTools()}, nil
 	case "tools/call":
@@ -228,7 +249,7 @@ func (s *Server) dispatch(ctx context.Context, request rpcRequest) (interface{},
 		}
 		return s.callTool(ctx, params)
 	default:
-		return nil, fmt.Errorf("unsupported MCP method %q", request.Method)
+		return nil, fmt.Errorf("%w: %q", errMethodNotFound, request.Method)
 	}
 }
 
@@ -377,6 +398,7 @@ func (s *Server) registerTools() {
 			return memoryContextResult{Context: memorySummaries(memories), Returned: len(memories), Limit: query.Limit}, nil
 		},
 	})
+	s.registerIntelTools()
 }
 
 func (s *Server) memoryStore() *learning.Store {
@@ -508,18 +530,14 @@ func objectSchema(properties map[string]interface{}, required []string, descript
 	return schema
 }
 
-func requestID(raw json.RawMessage) (interface{}, bool) {
-	if len(raw) == 0 {
-		return nil, false
-	}
-	var id interface{}
-	if err := json.Unmarshal(raw, &id); err != nil {
-		return nil, false
-	}
-	return id, true
+// validID reports whether a JSON value already known to be well formed is a string, number, or
+// null: the id types JSON-RPC 2.0 allows.
+func validID(id json.RawMessage) bool {
+	c := id[0]
+	return c == '"' || c == 'n' || c == '-' || (c >= '0' && c <= '9')
 }
 
-func errorResponse(id interface{}, code int, message string) rpcResponse {
+func errorResponse(id json.RawMessage, code int, message string) rpcResponse {
 	return rpcResponse{JSONRPC: "2.0", ID: id, Error: &rpcError{Code: code, Message: message}}
 }
 

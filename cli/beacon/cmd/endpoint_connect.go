@@ -84,7 +84,8 @@ func init() {
 func runEndpointConnect(cmd *cobra.Command, args []string) error {
 	userMode := endpointUserMode()
 	if !userMode && !lifecycle.HasSystemPrivileges() {
-		return fmt.Errorf("connecting a system endpoint needs root: rerun with sudo, or pass --user for a per-user install")
+		return fmt.Errorf("connecting a system endpoint needs elevated privileges; %s, or pass --user for a per-user install",
+			lifecycle.SystemPrivilegeHint())
 	}
 	return connectEndpoint(cmd, userMode, loadOrDefaultConfig().LogPath, false)
 }
@@ -242,7 +243,8 @@ func hasAccountScope(scopes []string, target string) bool {
 func runEndpointDisconnect(cmd *cobra.Command, args []string) error {
 	userMode := endpointUserMode()
 	if !userMode && !lifecycle.HasSystemPrivileges() {
-		return fmt.Errorf("disconnecting a system endpoint needs root: rerun with sudo, or pass --user for a per-user install")
+		return fmt.Errorf("disconnecting a system endpoint needs elevated privileges; %s, or pass --user for a per-user install",
+			lifecycle.SystemPrivilegeHint())
 	}
 	enrollment, loadErr := asymptote.LoadEnrollment(userMode)
 	cfg := loadOrDefaultConfig()
@@ -352,14 +354,7 @@ func scriptForwarderStatusLine(status service.Status) string {
 // /dashboard/telemetry have no route behind them, so anything printed here has to
 // stop at the dashboard itself.
 func dashboardHomeURL(base string) string {
-	base = strings.TrimRight(strings.TrimSpace(base), "/")
-	if base == "" {
-		return auth.DefaultDashboardURL + "/dashboard"
-	}
-	if strings.HasSuffix(base, "/dashboard") {
-		return base
-	}
-	return base + "/dashboard"
+	return auth.DashboardHomeURL(base)
 }
 
 func managedIngestStatusLine(status asymptote.ManagedIngestStatus) string {

@@ -104,13 +104,18 @@ manual checklist in [docs/runtimes/browser-extension-chromium.mdx](../docs/runti
 Every emitted event names the browser that produced it (`user_agent.name`, `user_agent.version`,
 `browser.brands`; see `src/shared/browser-identity.ts`).
 
-**Beta, and not on the Chrome Web Store.** It installs unpacked, so Chrome will not
-auto-update it: to move to a new version, rebuild or re-download and reload.
+**Beta, and not on the Chrome Web Store.** Each `ext-v*` release on the
+[releases page](https://github.com/Asymptote-Labs/agent-beacon/releases) carries two builds
+of the same bytes:
 
-No prebuilt archive is published yet, so build it. (Once an `ext-v*` release exists,
-`agent-beacon-browser-extension-<version>-chrome.zip` from the
-[releases page](https://github.com/Asymptote-Labs/agent-beacon/releases) will be
-loadable in place of `dist/`.)
+- `agent-beacon-browser-extension-<version>-chrome.crx`, signed for managed fleets. IT
+  force-installs it through Chrome policy from the update feed, locks its settings through
+  managed storage, and installed copies update themselves. See
+  [Deploy with Chrome policy](../docs/runtimes/browser-extension-chrome-policy.mdx).
+- `agent-beacon-browser-extension-<version>-chrome.zip`, for loading unpacked. Chrome does
+  not auto-update an unpacked extension: to move to a new version, re-download and reload.
+
+To load it unpacked from source instead, build it:
 
 ```bash
 npm ci
@@ -122,7 +127,7 @@ Then:
 1. Make sure the Beacon endpoint agent is running. It provides the `127.0.0.1:4318` collector.
 2. Open `chrome://extensions`.
 3. Turn on **Developer mode**, top right.
-4. Choose **Load unpacked**, and select `dist/` (or the unzipped release folder).
+4. Choose **Load unpacked**, and select `dist/` (or the unzipped release zip).
 5. Send a message on claude.ai or chatgpt.com, then check for `claude_web` / `chatgpt_web`
    events in `runtime.jsonl` or `beacon endpoint dashboard`.
 
@@ -346,13 +351,19 @@ dashboard), including interleaved sessions with no cross-contamination.
 
 > **Fixtures.** The committed `*.sse` files are **real, sanitized** captures (via
 > `npm run record:fixtures`): `fixtures/claude/simple-turn.sse` (claude.ai) and
-> `fixtures/chatgpt/simple-turn.sse` (ChatGPT). `claude/with-tool-call.sse` is synthetic (documented
-> Anthropic tool-use shape) pending a real tool-call capture. Raw recorder output (`*.page.html`,
+> `fixtures/chatgpt/simple-turn.sse` (ChatGPT). `claude/web-search.sse` and
+> `chatgpt/web-search-split.sse` are sanitized and shortened from October 2026 captures and keep
+> their event and op order. `claude/with-tool-call.sse` is synthetic (documented Anthropic
+> tool-use shape). Raw recorder output (`*.page.html`,
 > `*.meta.json`, `real-*.sse`, `diag-*.sse`) is git-ignored — it can contain personal chat/account
 > data, so only hand-sanitized `*.sse` fixtures are committed.
 >
-> Real-format notes: **claude.ai** emits a leading `conversation_ready` event and nests the model in
-> `message_start.message.model` (typed Anthropic events). **ChatGPT** posts to
-> `/backend-api/f/conversation` and streams OpenAI `delta_encoding: v1` JSON-patch ops (add/append/patch
-> with bare-value path inheritance), model in `metadata.model_slug`. Neither site streams token usage,
-> so `gen_ai.usage.*` is absent for both.
+> Real-format notes: **claude.ai** sends the completion request body gzip-compressed (a `Uint8Array`
+> with `Content-Encoding: gzip`), which the interceptor decompresses (`src/interceptor/request-body.ts`).
+> Its stream nests the model in `message_start.message.model` (typed Anthropic events) and adds
+> `tool_result`, `thinking` and citation blocks plus `ping` and `message_limit` events. **ChatGPT**
+> posts to `/backend-api/f/conversation` and streams OpenAI `delta_encoding: v1` JSON-patch ops
+> (add/append/replace/remove/patch with bare-value path inheritance). Each op's `c` names the message
+> it applies to, and ops for different messages interleave; an answer interrupted by a search
+> streams per-segment messages plus a merged one (`metadata.is_merged_message`). Model in
+> `metadata.model_slug`. Neither site streams token usage, so `gen_ai.usage.*` is absent for both.

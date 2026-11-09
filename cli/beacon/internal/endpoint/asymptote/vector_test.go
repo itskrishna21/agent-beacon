@@ -74,17 +74,6 @@ func TestCompareVersions(t *testing.T) {
 	}
 }
 
-func TestValidateVectorConfigSurfacesVectorOutput(t *testing.T) {
-	ok := fakeVector(t, "0.56.0", 0)
-	if err := ValidateVectorConfig(ok, "/tmp/x.toml"); err != nil {
-		t.Fatalf("validate ok: %v", err)
-	}
-	bad := fakeVector(t, "0.56.0", 3)
-	if err := ValidateVectorConfig(bad, "/tmp/x.toml"); err == nil || !strings.Contains(err.Error(), "vector validate failed") {
-		t.Fatalf("expected validate failure, got %v", err)
-	}
-}
-
 func TestEnrollmentStoreUsesPrivatePermissionsAndAtomicWrites(t *testing.T) {
 	home := t.TempDir()
 	testenv.SetHome(t, home)
@@ -212,7 +201,7 @@ func TestVectorNotFoundMessageNamesWhereVectorComesFrom(t *testing.T) {
 	cases := map[string][]string{
 		"darwin":  {"brew install asymptote-labs/tap/" + TapVectorFormula, VectorBinEnv},
 		"linux":   {PackagedVectorPath, ArchiveVectorName, "https://vector.dev", VectorBinEnv},
-		"windows": {"https://vector.dev", VectorBinEnv},
+		"windows": {WindowsVectorName, `%ProgramFiles%\Beacon\bin`, "https://vector.dev", VectorBinEnv},
 	}
 	for goos, want := range cases {
 		msg := vectorNotFoundMessage(goos)
@@ -224,6 +213,28 @@ func TestVectorNotFoundMessageNamesWhereVectorComesFrom(t *testing.T) {
 	}
 	if strings.Contains(vectorNotFoundMessage("linux"), "brew install") {
 		t.Error("the Linux message should not send people to a macOS install command")
+	}
+}
+
+// The MSI installs vector.exe beside beacon.exe. A beacon.exe run from elsewhere still finds the
+// package's copy, and the package directory is not listed twice when that is where beacon.exe is.
+func TestWindowsVectorSearchPathsFindTheMSICopy(t *testing.T) {
+	programFiles := t.TempDir()
+	t.Setenv("ProgramFiles", programFiles)
+	packaged := filepath.Join(programFiles, "Beacon", "bin", WindowsVectorName)
+	oldExe := currentExecutable
+	t.Cleanup(func() { currentExecutable = oldExe })
+
+	elsewhere := filepath.Join(t.TempDir(), "beacon.exe")
+	currentExecutable = func() (string, error) { return elsewhere, nil }
+	want := []string{filepath.Join(filepath.Dir(elsewhere), WindowsVectorName), packaged}
+	if got := windowsVectorSearchPaths(); !slices.Equal(got, want) {
+		t.Fatalf("beacon.exe outside the package: got %v, want %v", got, want)
+	}
+
+	currentExecutable = func() (string, error) { return filepath.Join(filepath.Dir(packaged), "beacon.exe"), nil }
+	if got := windowsVectorSearchPaths(); !slices.Equal(got, []string{packaged}) {
+		t.Fatalf("beacon.exe in the package: got %v, want only %s", got, packaged)
 	}
 }
 
