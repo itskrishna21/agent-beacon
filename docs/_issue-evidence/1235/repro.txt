@@ -1,0 +1,21 @@
+$ beacon handoff list --dir /tmp/beacon-hunt/proj-a
+No resumable sessions found.
+
+$ beacon share --list --cwd /tmp/beacon-hunt/proj-a --log-path ~/.beacon/endpoint/logs/runtime.jsonl
+ID          RUNTIME     UPDATED  DIRECTORY                TITLE
+gem-1       gemini_cli  20h ago  /tmp/beacon-hunt/proj-a  hello from gemini
+sess-alpha  cursor      23h ago  /tmp/beacon-hunt/proj-a  Fix the flaky dashboard empty state
+
+$ beacon handoff export gem-1 --print | head
+# Handoff brief
+
+Beacon wrote this brief from a Gemini CLI session stored on this machine, so the session can be picked up again. It is a summary, not the full transcript: long messages, command output and diffs are cut, secrets Beacon recognises are redacted, and nothing the runtime kept only in memory is here. The runtime's own session file was not available, so this brief comes from Beacon's runtime log, which keeps less of each step.
+
+## Source session
+
+- Runtime: Gemini CLI (`gemini_cli`)
+- Session: `gem-1`
+- Directory: `/tmp/beacon-hunt/proj-a`
+- Branch: unknown
+- Last activity: 2026-11-09T13:00:00Z
+- Brief written: 2026-11-10T09:39:49Z
